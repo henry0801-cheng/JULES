@@ -13,11 +13,11 @@
 ## 2. 績效指標 (Performance Metrics)
 | 指標 (Metric) | 數值 (Value) |
 |---|---|
-| **最終資產 (Final Value)** | **49,373,809.67** |
-| **總報酬率 (Total Return)** | **146.87%** |
-| **年化報酬率 (Annualized Return)** | **55.24%** |
-| **最大回撤 (Max Drawdown)** | **-15.05%** |
-| **卡瑪比率 (Calmar Ratio)** | **3.67** |
+| **最終資產 (Final Value)** | **46,840,389.30** |
+| **總報酬率 (Total Return)** | **134.20%** |
+| **年化報酬率 (Annualized Return)** | **51.31%** |
+| **最大回撤 (Max Drawdown)** | **-15.24%** |
+| **卡瑪比率 (Calmar Ratio)** | **3.37** |
 
 ## 3. 交易詳細說明 (Detailed Trading Info)
 詳細的逐筆交易紀錄、每日持股狀態、以及每日選股的候選名單，請參閱隨附的 Excel 檔案 (`trading_results.xlsx`)。

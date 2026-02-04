@@ -191,10 +191,10 @@ class Backtest:
 
                 # Check liquidity
                 # 買進金額必須小於20日均量收盤價1000的10/1
-                limit_cost = float('inf')
+                limit_cost = 0
                 if self.volume_ma is not None and stock in self.volume_ma.columns:
                     vol_ma = self.volume_ma.loc[date, stock]
-                    if not pd.isna(vol_ma):
+                    if not pd.isna(vol_ma) and vol_ma > 0:
                          # Formula: (20-day Volume MA * 1000 * Price) / 10
                          limit_cost = (vol_ma * 1000 * price) / 10
 
