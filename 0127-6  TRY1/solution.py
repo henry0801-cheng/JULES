@@ -287,6 +287,10 @@ class Backtest:
 
         # 計算動能
         current_prices = self.data.iloc[idx]
+        # Ensure we don't use negative indexing which wraps around
+        if idx - self.lookback_days < 0:
+             return
+
         past_prices = self.data.iloc[idx-self.lookback_days]
 
         past_prices = past_prices.replace(0, np.nan)
