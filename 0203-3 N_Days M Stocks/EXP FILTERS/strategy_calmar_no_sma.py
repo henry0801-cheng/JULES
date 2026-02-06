@@ -77,6 +77,13 @@ class Strategy:
         # 為了方便計算，直接算成交金額(元)
         turnover_value = P * Q * 1000
         v_bar_threshold = self.v_bar * 10_000_000
+
+        # Calculate MA20 and MA60 for Filter 2
+        ma20 = P.rolling(window=20).mean()
+        ma60 = P.rolling(window=60).mean()
+
+        # Calculate Daily Returns for Filter 1
+        daily_returns = P.pct_change(1)
         
         # 回測變數
         cash = self.initial_capital
@@ -129,43 +136,6 @@ class Strategy:
             equity_hold.append({'Date': today, 'Count': len(holdings), 'Details': str(current_holdings_info)})
 
             # 2. 檢查出場 (每日檢查) -- T日訊號，T+1執行 (這裡簡化為 T 日 Close 結算)
-            # 實際操作: 今天產生訊號，明天用明天收盤價賣出?
-            # 為了回測邏輯一致性，我們假設:
-            # - 今天 (T) 結束時檢查所有訊號
-            # - 若有出場訊號 -> 在 T+1 Close 賣出 (或 T Close 賣出)
-            # - 若有進場訊號 -> 在 T+1 Close 買入
-            # 因缺乏 Open 價，且題目說 "T+1執行T日訊號"，我們採用:
-            # 在 loop 到 T+1 時處理 T 日產生的訊號?
-            # 簡化寫法： loop 代表 Day T。
-            # "T+1 執行": 我們在 Day T 計算訊號，決定 Day T+1 要變動的持倉。
-            # 但因為我們是逐日 Loop，我們可以在 Day T 執行 "基於 Day T-1 訊號" 的動作?
-            # 或者，更簡單的：
-            # 在 Day T 檢查停損 -> 標記要賣出的。
-            # 在 Day T 檢查再平衡 -> 標記要買入/調整的。
-            # 實際上交易發生在價格 P[T] (假設我們無法預知未來，只能在 T 收盤後知道訊號，只能在 T+1 交易)
-            # 既然只能用 Close，相當於 T日收盤訊號，T+1收盤價成交。
-            
-            # 所以邏輯調整: 
-            # Step A: 執行 "待出場" 和 "待進場" 的訂單 (使用今日價格)
-            # Step B: 產生新的 "待出場" 和 "待進場" 訂單 (基於今日收盤數據)
-            
-            # 但為了簡化且符合大部分簡易回測習慣 (且題目未給 Open)，通常會將 "T+1 執行" 視為 "Next Daily Bar"。
-            # 我們這裡用一個 delayed_orders 隊列，或者直接在當日 Loop 尾端決定明日持倉。
-            # 為了嚴謹，我將採用 "Signals Calculated at T, Executed at T+1 Close"
-            # 這意味著 Loop i 的時候，我們執行 i-1 產生的訊號。
-            
-            # 不過，Rebalance 是 "每 5 天"。這是一個排程。
-            
-            # --- 修正後的準確邏輯 ---
-            # Loop i 是 Day T。
-            # 1. 處理 Pending Orders (來自 T-1 的訊號)
-            #    - Sell Orders
-            #    - Buy Orders
-            # 2. 更新持倉資訊 (Highest Price)
-            # 3. 檢查 Exit Signals (產生 T+1 Sell Orders)
-            # 4. 檢查 Entry Signals (若 Rebalance Day) (產生 T+1 Buy/Sell Orders)
-            
-            # 由於需要處理 "資金釋放後才能買"，必須先賣後買。
             
             # 初始化 pending orders (如果是第一天)
             if not hasattr(self, 'pending_sells'): self.pending_sells = []
@@ -215,6 +185,15 @@ class Strategy:
                 
                 if ticker in todays_prices and not np.isnan(todays_prices[ticker]):
                     price = todays_prices[ticker]
+
+                    # Filter 1: Buy Day (T+1) Price Movement Filter
+                    # 若當日漲幅 > 9.5% 或 當日跌幅 < -9.5%，不做此筆交易
+                    if ticker in daily_returns.columns:
+                        dr = daily_returns.loc[today, ticker]
+                        if not np.isnan(dr) and (dr > 0.095 or dr < -0.095):
+                            # print(f"Filter 1 Triggered for {ticker} on {today}: Return {dr:.2%}")
+                            continue
+
                     # 買入成本 = 價格 * (1 + 滑價)
                     cost_per_share = price * (1 + self.slip_rate)
                     
@@ -285,10 +264,25 @@ class Strategy:
                 vals = turnover_value.loc[today]
                 liquid_tickers = vals[vals > v_bar_threshold].index
                 
+                # Filter 2: Signal Day (T) Moving Average Alignment
+                # T日股價20、60日均線必須多頭排列時 (MA20 > MA60)
+                ma20_today = ma20.loc[today]
+                ma60_today = ma60.loc[today]
+                bullish_mask = (ma20_today > ma60_today)
+
+                # Filter liquid tickers with bullish alignment
+                # Note: align indices
+                valid_bullish = bullish_mask.loc[liquid_tickers]
+                # valid_bullish is a boolean Series indexed by liquid_tickers
+                # Filter those that are True and not NaN
+                valid_bullish = valid_bullish[valid_bullish == True].index
+
+                candidates_pool = valid_bullish
+
                 # 2. 排名: 過去 N 天漲幅
                 # returns_n.loc[today]
-                # 只看 liquid tickers
-                candidates = returns_n.loc[today, liquid_tickers].dropna()
+                # 只看 filtered tickers
+                candidates = returns_n.loc[today, candidates_pool].dropna()
                 
                 # 取前 TOP_K
                 top_candidates = candidates.sort_values(ascending=False).head(self.top_k)
@@ -549,7 +543,7 @@ if __name__ == "__main__":
     # Check for relative path (assuming script is in 0203-3... folder and data is in 0127-6...)
     # Using abspath to handle current working directory variations
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    relative_path = os.path.join(current_dir, '..', '0127-6  TRY1', 'cleaned_stock_data1.xlsx')
+    relative_path = os.path.join(current_dir, '..', '..', '0127-6  TRY1', 'cleaned_stock_data1.xlsx')
     
     if os.path.exists(default_path):
         DATA_FILE = default_path
