@@ -176,9 +176,31 @@ class Strategy:
             # --- Step 1: Execute Pending Orders at Today's Close ---
             # 1.1 Execute Sells
             money_returned = 0
+
+            yesterday_prices_for_filter = P.iloc[i-1] if i > 0 else None
+
             for ticker in self.pending_sells:
                 if ticker in holdings and ticker in todays_prices and not np.isnan(todays_prices[ticker]):
                     price = todays_prices[ticker]
+
+                    # 檢查 T+1 日漲跌幅絕對值是否 > 9.6%
+                    if yesterday_prices_for_filter is not None and ticker in yesterday_prices_for_filter and not np.isnan(yesterday_prices_for_filter[ticker]):
+                        prev_close = yesterday_prices_for_filter[ticker]
+                        if prev_close > 0:
+                            daily_ret = (price - prev_close) / prev_close
+                            if abs(daily_ret) > 0.096:
+                                # 跳過交易，不賣出，也不刪除 pending (讓它留到明天?)
+                                # 如果留到明天，mean pending_sells 不清空?
+                                # 但 pending_sells 是在 loop 尾端被 next_sells 覆蓋的。
+                                # 若要保留，必須加入 next_sells?
+                                # 這裡的架構是 self.pending_sells = next_sells (Step 4 之後)
+                                # 所以如果這裡不執行，但也不做處理，這筆單就會消失（因為 pending_sells 會被新產生的 next_sells 覆蓋）。
+                                # 但 "出場訊號" 通常是持續檢查的。
+                                # Step 3 會再次檢查 exit reason。
+                                # 如果 StopLoss 條件依然存在，它會再次加入 next_sells。
+                                # 所以這裡只要 "continue" 不執行即可。
+                                continue
+
                     shares = holdings[ticker]['shares']
                     
                     # 考慮滑價與稅
@@ -217,6 +239,16 @@ class Strategy:
                 
                 if ticker in todays_prices and not np.isnan(todays_prices[ticker]):
                     price = todays_prices[ticker]
+
+                    # 檢查 T+1 日漲跌幅絕對值是否 > 9.6%
+                    if yesterday_prices_for_filter is not None and ticker in yesterday_prices_for_filter and not np.isnan(yesterday_prices_for_filter[ticker]):
+                        prev_close = yesterday_prices_for_filter[ticker]
+                        if prev_close > 0:
+                            daily_ret = (price - prev_close) / prev_close
+                            if abs(daily_ret) > 0.096:
+                                # 跳過交易
+                                continue
+
                     # 買入成本 = 價格 * (1 + 滑價)
                     cost_per_share = price * (1 + self.slip_rate)
                     
