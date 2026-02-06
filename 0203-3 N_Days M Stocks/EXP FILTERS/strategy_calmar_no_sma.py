@@ -13,7 +13,7 @@ plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 class Strategy:
-    def __init__(self, data_file, n_days, top_k, v_bar, trail_stop, data=None):
+    def __init__(self, data_file, n_days, top_k, v_bar, trail_stop, pct_stp, data=None):
         """
         初始化策略
         :param data_file: 資料 Excel 路徑
@@ -21,6 +21,7 @@ class Strategy:
         :param top_k: 持有排名前 K 檔 (即 S_H)
         :param v_bar: 流動性門檻 (單位: 千萬元)
         :param trail_stop: 移動停損百分比 (例如 0.1 代表 10%)
+        :param pct_stp: 固定停損百分比 (例如 0.1 代表 10%)
         :param data: 預先讀取的資料 (Optional)
         """
         self.data_file = data_file
@@ -28,6 +29,7 @@ class Strategy:
         self.top_k = int(top_k)
         self.v_bar = v_bar
         self.trail_stop = trail_stop
+        self.pct_stp = pct_stp
         
         # 固定參數
         self.initial_capital = 20_000_000
@@ -263,7 +265,13 @@ class Strategy:
                         next_sells.append(ticker)
                     continue
 
-                # Stop 2: SMA Stop REMOVED
+                # Stop 2: Fixed Stop Loss (PCT_STP)
+                entry_p = holdings[ticker]['entry_price']
+                if price < entry_p * (1 - self.pct_stp):
+                    holdings[ticker]['exit_reason'] = 'StopLoss'
+                    if ticker not in next_sells:
+                        next_sells.append(ticker)
+                    continue
                         
             # --- Step 4: Generate Entry/Rebalance Signals (For T+1 Execution) ---
             # Rebalance counter
@@ -417,7 +425,8 @@ class Strategy:
                 'N_DAYS': self.n_days,
                 'TOP_K': self.top_k,
                 'V_BAR': self.v_bar,
-                'TRAIL_STOP': self.trail_stop
+                'TRAIL_STOP': self.trail_stop,
+                'PCT_STP': self.pct_stp
             }])
             summary.to_excel(writer, sheet_name='Summary', index=False)
             
@@ -459,7 +468,8 @@ class AntColonyOptimizer:
             'n_days': list(range(3, 8, 1)),      # 5 to 60 step 5
             'top_k': list(range(2, 6, 1)),       # 3 to 10
             'v_bar': list(range(5, 20, 2)),       # 1 to 10 (千萬)
-            'trail_stop': [i/100 for i in range(5, 15, 1)], # 0.05 to 0.30
+            'trail_stop': [i/100 for i in range(5, 15, 1)], # 0.05 to 0.15
+            'pct_stp': [i/100 for i in range(5, 25, 2)], # 0.05 to 0.23
         }
         
         self.keys = list(self.param_ranges.keys())
@@ -490,7 +500,7 @@ class AntColonyOptimizer:
         print(f"Starting ACO Optimization (Target: Calmar Ratio) with {self.n_ants} ants, {self.n_iterations} iterations...")
         
         # Pre-load data once to save time
-        temp_strat = Strategy(self.data_file, 10, 5, 5, 0.1)
+        temp_strat = Strategy(self.data_file, 10, 5, 5, 0.1, 0.1)
         shared_data = temp_strat.data
         
         for iteration in range(self.n_iterations):
@@ -579,12 +589,14 @@ if __name__ == "__main__":
             top_k = int(input("Enter TOP_K (e.g., 5): "))
             v_bar = float(input("Enter V_BAR (10 million unit, e.g., 10): "))
             trail_stop = float(input("Enter TRAIL_STOP (0.1 = 10%, e.g., 0.1): "))
+            pct_stp = float(input("Enter PCT_STP (0.1 = 10%, e.g., 0.1): "))
             
             params = {
                 'n_days': n_days,
                 'top_k': top_k,
                 'v_bar': v_bar,
-                'trail_stop': trail_stop
+                'trail_stop': trail_stop,
+                'pct_stp': pct_stp
             }
             
             print(f"\nRunning backtest with params: {params}")
