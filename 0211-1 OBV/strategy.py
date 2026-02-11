@@ -31,18 +31,19 @@ class Config:
 
     # 策略固定參數
     RSI_PERIOD = 14      # RSI天數 (固定 14)
-    OBV_WINDOW = 5       # OBV近5天增幅 (固定 5)
 
     # 參數範圍 (用於 ACO 探索)
     # S_H: 最大持倉檔數 (例如 2~10)
     # RE_DAYS: 再平衡天數 (例如 5~60)
     # EXIT_MA: 出場均線 (例如 5~60)
     # OBV_RANK: 每次買進時，選擇OBV前幾名的股票 (例如 1~5)
+    # OBV_WINDOW: OBV增幅計算天數 (例如 2~10)
     PARAM_RANGES = {
         'S_H': list(range(2, 11, 1)),      # 2 到 10
         'RE_DAYS': list(range(5, 61, 5)),  # 5 到 60, 間隔 5
         'EXIT_MA': list(range(5, 61, 5)),  # 5 到 60, 間隔 5
-        'OBV_RANK': list(range(1, 6, 1))   # 1 到 5
+        'OBV_RANK': list(range(1, 6, 1)),  # 1 到 5
+        'OBV_WINDOW': list(range(2, 11, 1)) # 2 到 10
     }
 
 # ==========================================
@@ -99,6 +100,7 @@ class Strategy:
         self.RE_DAYS = params['RE_DAYS']
         self.EXIT_MA = params['EXIT_MA']
         self.OBV_RANK = params['OBV_RANK']
+        self.OBV_WINDOW = params['OBV_WINDOW']
 
         # 計算指標
         self.indicators = {}
@@ -133,9 +135,9 @@ class Strategy:
         obv_flow = direction * self.volume
         self.indicators['obv'] = obv_flow.cumsum()
 
-        # 3. OBV Score (近5天增幅 * 收盤價)
-        # OBV[t] - OBV[t-5]
-        obv_diff = self.indicators['obv'].diff(Config.OBV_WINDOW)
+        # 3. OBV Score (近OBV_WINDOW天增幅 * 收盤價)
+        # OBV[t] - OBV[t-window]
+        obv_diff = self.indicators['obv'].diff(self.OBV_WINDOW)
         # Score = Diff * Close
         self.indicators['obv_score'] = obv_diff * self.close
 
@@ -158,7 +160,7 @@ class Strategy:
 
         dates = self.close.index
         # 從最大 days 開始，避免指標 NaN
-        start_idx = max(Config.RSI_PERIOD, Config.OBV_WINDOW, self.EXIT_MA, 60)
+        start_idx = max(Config.RSI_PERIOD, self.OBV_WINDOW, self.EXIT_MA, 60)
 
         # 為了計算 Rebalance 日期，我們可以使用相對索引
         # RE_DAYS 從回測開始算起
@@ -471,7 +473,8 @@ def main():
         'S_H': 5,
         'RE_DAYS': 20,
         'EXIT_MA': 20,
-        'OBV_RANK': 3
+        'OBV_RANK': 3,
+        'OBV_WINDOW': 5
     }
 
     # 1. 讀取資料
