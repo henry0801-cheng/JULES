@@ -37,10 +37,12 @@ class Config:
     # S_H: 最大持倉檔數 (例如 2~10)
     # RE_DAYS: 再平衡天數 (例如 5~60)
     # EXIT_MA: 出場均線 (例如 5~60)
+    # OBV_RANK: 每次買進時，選擇OBV前幾名的股票 (例如 1~5)
     PARAM_RANGES = {
         'S_H': list(range(2, 11, 1)),      # 2 到 10
         'RE_DAYS': list(range(5, 61, 5)),  # 5 到 60, 間隔 5
-        'EXIT_MA': list(range(5, 61, 5))   # 5 到 60, 間隔 5
+        'EXIT_MA': list(range(5, 61, 5)),  # 5 到 60, 間隔 5
+        'OBV_RANK': list(range(1, 6, 1))   # 1 到 5
     }
 
 # ==========================================
@@ -96,6 +98,7 @@ class Strategy:
         self.S_H = params['S_H']
         self.RE_DAYS = params['RE_DAYS']
         self.EXIT_MA = params['EXIT_MA']
+        self.OBV_RANK = params['OBV_RANK']
 
         # 計算指標
         self.indicators = {}
@@ -174,38 +177,32 @@ class Strategy:
             # 題目: "每RE_DAYS日再平衡"
             is_rebalance_day = ((i - start_idx) % self.RE_DAYS == 0)
 
-            # 候選名單 (Target Portfolio)
-            target_portfolio = [] # List of tickers
+            # 候選名單 (Entry Candidates)
+            entry_candidates = [] # List of tickers
 
             if is_rebalance_day:
                 # 1. 篩選 RSI > 70
                 # 2. 排序 OBV Score
-                # 3. 取前 S_H
+                # 3. 取前 OBV_RANK 名
 
                 # 取得 RSI > 70 的股票
-                # 注意: 需要處理 NaN
                 valid_candidates = current_rsi[current_rsi > 70].index.tolist()
 
                 # 計算 Score 並排序
                 scores = current_obv_score.loc[valid_candidates].dropna()
                 ranked_candidates = scores.sort_values(ascending=False).index.tolist()
 
-                # 取前 S_H
-                target_portfolio = ranked_candidates[:self.S_H]
+                # 取前 OBV_RANK 名
+                entry_candidates = ranked_candidates[:self.OBV_RANK]
 
                 daily_candidates.append({
                     'Date': t_date,
-                    'Count': len(target_portfolio),
-                    'Candidates': str(target_portfolio),
+                    'Count': len(entry_candidates),
+                    'Candidates': str(entry_candidates),
                     'All_Valid': len(valid_candidates)
                 })
             else:
-                # 非 Rebalance 日，Target Portfolio 維持現狀?
-                # 不，非 Rebalance 日不進行進場/換股操作，只檢查賣出訊號
-                # 但為了邏輯一致，我們假設 Target Portfolio 是 "Current Holdings"
-                # 除非觸發賣出訊號 (RSI < 70)
-                target_portfolio = list(positions.keys())
-                daily_candidates.append({'Date': t_date, 'Count': 0, 'Candidates': 'No Rebalance'})
+                daily_candidates.append({'Date': t_date, 'Count': 0, 'Candidates': 'No Entry Check'})
 
             # --- 交易決策 ---
 
@@ -221,18 +218,14 @@ class Strategy:
                 if not pd.isna(price) and not pd.isna(ma_val) and price < ma_val:
                     sell_list.append((ticker, f'Exit: Price < MA{self.EXIT_MA}'))
 
-            # 2. Rebalance 調整 (僅在 Rebalance 日執行)
-            # 並且: 排除已經因為 賣出訊號 而要賣出的
+            # 2. 進場邏輯 (僅在 Rebalance 日執行)
+            # 取消 Rebalance Sell，僅執行進場買入
             if is_rebalance_day:
                 current_sell_tickers = [t for t, r in sell_list]
 
-                # 檢查持股: 如果不在 Target Portfolio 中，且尚未在 sell_list 中 -> 賣出 (換股)
-                for ticker in list(positions.keys()):
-                    if ticker not in target_portfolio and ticker not in current_sell_tickers:
-                        sell_list.append((ticker, 'Rebalance: Not in Top S_H'))
-
-                # 檢查 Target Portfolio: 如果未持有，且不在 sell_list -> 買進
-                for ticker in target_portfolio:
+                # 檢查 Entry Candidates: 如果未持有，且不在 sell_list -> 買進
+                # 注意: 需要考慮 S_H 上限 (在執行買進時檢查)
+                for ticker in entry_candidates:
                     if ticker not in positions and ticker not in current_sell_tickers:
                          buy_list.append(ticker)
 
@@ -477,7 +470,8 @@ def main():
     MANUAL_PARAMS = {
         'S_H': 5,
         'RE_DAYS': 20,
-        'EXIT_MA': 20
+        'EXIT_MA': 20,
+        'OBV_RANK': 3
     }
 
     # 1. 讀取資料
