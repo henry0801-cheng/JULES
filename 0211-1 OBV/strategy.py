@@ -11,6 +11,7 @@ class Config:
     """設定與常數 (Settings and Constants)"""
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_FILE = os.path.join(BASE_DIR, 'cleaned_stock_data1.xlsx')
+    INDEX_FILE = os.path.join(BASE_DIR, '../Clean data 0209/Index_data.xlsx') # 假設相對路徑，若不在則需調整
     RESULT_FILE = os.path.join(BASE_DIR, 'strategy_results.xlsx')
 
     # 資金管理
@@ -33,18 +34,21 @@ class Config:
         'RE_DAYS': list(range(5, 61, 5)),  # RE_DAYS: 再平衡天數 (5~60)
         'EXIT_MA': list(range(5, 61, 5)),  # EXIT_MA: 出場均線 (5~60)
         'OBV_RANK': list(range(1, 6, 1)),  # OBV_RANK: 每次買進時，選擇OBV前幾名的股票 (1~5)
-        'OBV_WINDOW': list(range(2, 11, 1)) # OBV_WINDOW: OBV增幅計算天數 (2~10)
+        'OBV_WINDOW': list(range(2, 11, 1)), # OBV_WINDOW: OBV增幅計算天數 (2~10)
+        'IDX_MA': list(range(20, 201, 20))   # IDX_MA: 指數濾網均線 (20~200)
     }
 
 class DataLoader:
     """資料讀取類別 (Data Loader)"""
-    def __init__(self, filepath):
+    def __init__(self, filepath, index_filepath=None):
         self.filepath = filepath
+        self.index_filepath = index_filepath
         self.adj_close = None
         self.volume = None
+        self.index_data = None
 
     def load_data(self):
-        print("讀取資料中... (Loading Data)")
+        print("讀取個股資料中... (Loading Stock Data)")
         if not os.path.exists(self.filepath):
             raise FileNotFoundError(f"找不到檔案: {self.filepath}")
 
@@ -69,14 +73,46 @@ class DataLoader:
         self.adj_close.ffill(inplace=True)
         self.volume.fillna(0, inplace=True)
 
-        print(f"資料讀取完成。期間: {self.adj_close.index[0].date()} 至 {self.adj_close.index[-1].date()}")
-        return self.adj_close, self.volume
+        print(f"個股資料讀取完成。期間: {self.adj_close.index[0].date()} 至 {self.adj_close.index[-1].date()}")
+
+        # 讀取指數資料
+        if self.index_filepath:
+            print(f"讀取指數資料中... (Loading Index Data from {self.index_filepath})")
+            if not os.path.exists(self.index_filepath):
+                 # 嘗試自動搜尋 Index_data.xlsx
+                 potential_path = os.path.join(os.path.dirname(self.filepath), '../Clean data 0209/Index_data.xlsx')
+                 if os.path.exists(potential_path):
+                     self.index_filepath = potential_path
+                 else:
+                     print(f"警告: 找不到指數檔案 {self.index_filepath}，將無法使用指數濾網。")
+                     self.index_data = None
+                     return self.adj_close, self.volume, self.index_data
+
+            try:
+                # 假設指數資料第一欄是日期，第二欄是價格 (或是第一欄index是日期)
+                # 通常 Index_data.xlsx 結構可能是一個 Series
+                idx_df = pd.read_excel(self.index_filepath, index_col=0)
+                idx_df.index = pd.to_datetime(idx_df.index)
+
+                # 取第一欄作為指數價格 (通常是 'Close' 或唯一欄位)
+                self.index_data = idx_df.iloc[:, 0]
+
+                # 對齊日期 (Reindex to stock dates, ffill)
+                self.index_data = self.index_data.reindex(self.adj_close.index).ffill()
+                print("指數資料讀取完成。")
+
+            except Exception as e:
+                print(f"讀取指數資料失敗: {e}")
+                self.index_data = None
+
+        return self.adj_close, self.volume, self.index_data
 
 class Strategy:
     """策略邏輯類別 (Strategy)"""
-    def __init__(self, data_close, data_volume, params):
+    def __init__(self, data_close, data_volume, index_data, params):
         self.close = data_close
         self.volume = data_volume  # 單位: 張
+        self.index_data = index_data
         self.params = params
 
         # 參數解包
@@ -85,6 +121,7 @@ class Strategy:
         self.EXIT_MA = params['EXIT_MA']
         self.OBV_RANK = params['OBV_RANK']
         self.OBV_WINDOW = params['OBV_WINDOW']
+        self.IDX_MA = params.get('IDX_MA', 200) # 預設 200 如果沒傳入
 
         self.indicators = {}
         self._calculate_indicators()
@@ -114,6 +151,10 @@ class Strategy:
         # 3. EXIT_MA (出場均線)
         self.indicators['exit_ma'] = self.close.rolling(window=self.EXIT_MA).mean()
 
+        # 4. 指數濾網 (IDX_MA)
+        if self.index_data is not None:
+            self.indicators['idx_ma'] = self.index_data.rolling(window=self.IDX_MA).mean()
+
     def run_backtest(self):
         capital = Config.INITIAL_CAPITAL
         entry_budget = Config.INITIAL_CAPITAL / self.S_H
@@ -125,7 +166,9 @@ class Strategy:
         daily_candidates = []
 
         dates = self.close.index
-        start_idx = max(Config.RSI_PERIOD, self.OBV_WINDOW, self.EXIT_MA, 60)
+        # 確保 idx_ma 也有足夠資料 (如果有 index data)
+        idx_ma_period = self.IDX_MA if self.index_data is not None else 0
+        start_idx = max(Config.RSI_PERIOD, self.OBV_WINDOW, self.EXIT_MA, idx_ma_period, 60)
 
         for i in range(start_idx, len(dates) - 1):
             t_date = dates[i]
@@ -137,24 +180,37 @@ class Strategy:
             current_obv_score = self.indicators['obv_score'].loc[t_date]
             current_exit_ma = self.indicators['exit_ma'].loc[t_date]
 
+            # 指數濾網檢查
+            allow_entry = True
+            if self.index_data is not None:
+                curr_idx_price = self.index_data.loc[t_date]
+                curr_idx_ma = self.indicators['idx_ma'].loc[t_date]
+                if pd.isna(curr_idx_price) or pd.isna(curr_idx_ma) or curr_idx_price < curr_idx_ma:
+                    allow_entry = False
+                    # 可以在這裡記錄 "Index Filter Blocked"
+
             is_rebalance_day = ((i - start_idx) % self.RE_DAYS == 0)
             entry_candidates = []
 
             if is_rebalance_day:
-                # 篩選: RSI > 70 -> 排序: OBV Score -> 取前 OBV_RANK
-                valid_candidates = current_rsi[current_rsi > 70].index.tolist()
-                scores = current_obv_score.loc[valid_candidates].dropna()
-                ranked_candidates = scores.sort_values(ascending=False).index.tolist()
-                entry_candidates = ranked_candidates[:self.OBV_RANK]
+                if allow_entry:
+                    # 篩選: RSI > 70 -> 排序: OBV Score -> 取前 OBV_RANK
+                    valid_candidates = current_rsi[current_rsi > 70].index.tolist()
+                    scores = current_obv_score.loc[valid_candidates].dropna()
+                    ranked_candidates = scores.sort_values(ascending=False).index.tolist()
+                    entry_candidates = ranked_candidates[:self.OBV_RANK]
 
-                daily_candidates.append({
-                    'Date': t_date,
-                    'Count': len(entry_candidates),
-                    'Candidates': str(entry_candidates),
-                    'All_Valid': len(valid_candidates)
-                })
+                    daily_candidates.append({
+                        'Date': t_date,
+                        'Count': len(entry_candidates),
+                        'Candidates': str(entry_candidates),
+                        'All_Valid': len(valid_candidates),
+                        'Filter': 'Pass'
+                    })
+                else:
+                    daily_candidates.append({'Date': t_date, 'Count': 0, 'Candidates': 'Blocked by Index Filter', 'Filter': 'Fail'})
             else:
-                daily_candidates.append({'Date': t_date, 'Count': 0, 'Candidates': 'No Entry Check'})
+                daily_candidates.append({'Date': t_date, 'Count': 0, 'Candidates': 'No Entry Check', 'Filter': 'NA'})
 
             # --- 交易決策 ---
             sell_list = [] # (ticker, reason)
@@ -168,7 +224,7 @@ class Strategy:
                     sell_list.append((ticker, f'Exit: Price < MA{self.EXIT_MA}'))
 
             # 2. 進場邏輯 (僅在 Rebalance 日執行)
-            if is_rebalance_day:
+            if is_rebalance_day and allow_entry:
                 current_sell_tickers = [t for t, r in sell_list]
                 for ticker in entry_candidates:
                     if ticker not in positions and ticker not in current_sell_tickers:
@@ -282,9 +338,10 @@ class Strategy:
 
 class AntColonyOptimizer:
     """螞蟻演算法 (ACO) 類別"""
-    def __init__(self, data_close, data_volume):
+    def __init__(self, data_close, data_volume, index_data):
         self.close = data_close
         self.volume = data_volume
+        self.index_data = index_data
         self.best_solution = None
         self.best_fitness = -np.inf
         self.pheromones = {
@@ -311,7 +368,7 @@ class AntColonyOptimizer:
             for ant in range(Config.ANT_COUNT):
                 params = {k: self._select_value(k) for k in Config.PARAM_RANGES}
 
-                strat = Strategy(self.close, self.volume, params)
+                strat = Strategy(self.close, self.volume, self.index_data, params)
                 metrics = strat.run_backtest()
                 fitness = metrics['CAGR']
 
@@ -351,25 +408,25 @@ def main():
     RUN_MODE = 'ACO'
 
     MANUAL_PARAMS = {
-        'S_H': 5, 'RE_DAYS': 20, 'EXIT_MA': 20, 'OBV_RANK': 3, 'OBV_WINDOW': 5
+        'S_H': 5, 'RE_DAYS': 20, 'EXIT_MA': 20, 'OBV_RANK': 3, 'OBV_WINDOW': 5, 'IDX_MA': 60
     }
 
     try:
-        loader = DataLoader(Config.DATA_FILE)
-        close_data, volume_data = loader.load_data()
+        loader = DataLoader(Config.DATA_FILE, Config.INDEX_FILE)
+        close_data, volume_data, index_data = loader.load_data()
     except Exception as e:
         print(f"錯誤: 無法讀取資料 - {e}")
         return
 
     if RUN_MODE == 'ACO':
-        optimizer = AntColonyOptimizer(close_data, volume_data)
+        optimizer = AntColonyOptimizer(close_data, volume_data, index_data)
         best_params = optimizer.run()
     else:
         print(f"使用手動參數: {MANUAL_PARAMS}")
         best_params = MANUAL_PARAMS
 
     print("\n使用參數產生最終報告...")
-    final_strat = Strategy(close_data, volume_data, best_params)
+    final_strat = Strategy(close_data, volume_data, index_data, best_params)
     metrics = final_strat.run_backtest()
 
     print(f"儲存結果至 {Config.RESULT_FILE}...")
