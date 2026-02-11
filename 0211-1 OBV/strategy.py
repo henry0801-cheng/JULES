@@ -35,7 +35,8 @@ class Config:
         'EXIT_MA': list(range(5, 61, 5)),  # EXIT_MA: 出場均線 (5~60)
         'OBV_RANK': list(range(1, 6, 1)),  # OBV_RANK: 每次買進時，選擇OBV前幾名的股票 (1~5)
         'OBV_WINDOW': list(range(2, 11, 1)), # OBV_WINDOW: OBV增幅計算天數 (2~10)
-        'IDX_MA': list(range(20, 201, 20))   # IDX_MA: 指數濾網均線 (20~200)
+        'IDX_MA1': list(range(20, 201, 20)),   # IDX_MA1: 指數濾網均線1 (20~200)
+        'IDX_MA2': list(range(20, 201, 20))    # IDX_MA2: 指數濾網均線2 (20~200)
     }
 
 class DataLoader:
@@ -121,7 +122,8 @@ class Strategy:
         self.EXIT_MA = params['EXIT_MA']
         self.OBV_RANK = params['OBV_RANK']
         self.OBV_WINDOW = params['OBV_WINDOW']
-        self.IDX_MA = params.get('IDX_MA', 200) # 預設 200 如果沒傳入
+        self.IDX_MA1 = params.get('IDX_MA1', 200)
+        self.IDX_MA2 = params.get('IDX_MA2', 60)
 
         self.indicators = {}
         self._calculate_indicators()
@@ -151,9 +153,10 @@ class Strategy:
         # 3. EXIT_MA (出場均線)
         self.indicators['exit_ma'] = self.close.rolling(window=self.EXIT_MA).mean()
 
-        # 4. 指數濾網 (IDX_MA)
+        # 4. 指數濾網 (IDX_MA1, IDX_MA2)
         if self.index_data is not None:
-            self.indicators['idx_ma'] = self.index_data.rolling(window=self.IDX_MA).mean()
+            self.indicators['idx_ma1'] = self.index_data.rolling(window=self.IDX_MA1).mean()
+            self.indicators['idx_ma2'] = self.index_data.rolling(window=self.IDX_MA2).mean()
 
     def run_backtest(self):
         capital = Config.INITIAL_CAPITAL
@@ -167,7 +170,7 @@ class Strategy:
 
         dates = self.close.index
         # 確保 idx_ma 也有足夠資料 (如果有 index data)
-        idx_ma_period = self.IDX_MA if self.index_data is not None else 0
+        idx_ma_period = max(self.IDX_MA1, self.IDX_MA2) if self.index_data is not None else 0
         start_idx = max(Config.RSI_PERIOD, self.OBV_WINDOW, self.EXIT_MA, idx_ma_period, 60)
 
         for i in range(start_idx, len(dates) - 1):
@@ -180,14 +183,20 @@ class Strategy:
             current_obv_score = self.indicators['obv_score'].loc[t_date]
             current_exit_ma = self.indicators['exit_ma'].loc[t_date]
 
-            # 指數濾網檢查
+            # 指數濾網檢查 (雙濾網: 兩者皆跌破才禁止進場)
             allow_entry = True
             if self.index_data is not None:
                 curr_idx_price = self.index_data.loc[t_date]
-                curr_idx_ma = self.indicators['idx_ma'].loc[t_date]
-                if pd.isna(curr_idx_price) or pd.isna(curr_idx_ma) or curr_idx_price < curr_idx_ma:
+                curr_idx_ma1 = self.indicators['idx_ma1'].loc[t_date]
+                curr_idx_ma2 = self.indicators['idx_ma2'].loc[t_date]
+
+                # 檢查條件
+                cond1 = (not pd.isna(curr_idx_ma1) and curr_idx_price < curr_idx_ma1)
+                cond2 = (not pd.isna(curr_idx_ma2) and curr_idx_price < curr_idx_ma2)
+
+                # 如果同時滿足 "跌破MA1" 且 "跌破MA2" -> 禁止進場
+                if cond1 and cond2:
                     allow_entry = False
-                    # 可以在這裡記錄 "Index Filter Blocked"
 
             is_rebalance_day = ((i - start_idx) % self.RE_DAYS == 0)
             entry_candidates = []
@@ -408,7 +417,8 @@ def main():
     RUN_MODE = 'ACO'
 
     MANUAL_PARAMS = {
-        'S_H': 5, 'RE_DAYS': 20, 'EXIT_MA': 20, 'OBV_RANK': 3, 'OBV_WINDOW': 5, 'IDX_MA': 60
+        'S_H': 5, 'RE_DAYS': 20, 'EXIT_MA': 20, 'OBV_RANK': 3, 'OBV_WINDOW': 5,
+        'IDX_MA1': 60, 'IDX_MA2': 200
     }
 
     try:
