@@ -36,9 +36,11 @@ class Config:
     # 參數範圍 (用於 ACO 探索)
     # S_H: 最大持倉檔數 (例如 2~10)
     # RE_DAYS: 再平衡天數 (例如 5~60)
+    # EXIT_MA: 出場均線 (例如 5~60)
     PARAM_RANGES = {
         'S_H': list(range(2, 11, 1)),      # 2 到 10
-        'RE_DAYS': list(range(5, 61, 5))   # 5 到 60, 間隔 5
+        'RE_DAYS': list(range(5, 61, 5)),  # 5 到 60, 間隔 5
+        'EXIT_MA': list(range(5, 61, 5))   # 5 到 60, 間隔 5
     }
 
 # ==========================================
@@ -93,6 +95,7 @@ class Strategy:
         # 參數解包
         self.S_H = params['S_H']
         self.RE_DAYS = params['RE_DAYS']
+        self.EXIT_MA = params['EXIT_MA']
 
         # 計算指標
         self.indicators = {}
@@ -133,6 +136,9 @@ class Strategy:
         # Score = Diff * Close
         self.indicators['obv_score'] = obv_diff * self.close
 
+        # 4. EXIT_MA (出場均線)
+        self.indicators['exit_ma'] = self.close.rolling(window=self.EXIT_MA).mean()
+
     def run_backtest(self):
         # 初始化回測變數
         capital = Config.INITIAL_CAPITAL
@@ -149,7 +155,7 @@ class Strategy:
 
         dates = self.close.index
         # 從最大 days 開始，避免指標 NaN
-        start_idx = max(Config.RSI_PERIOD, Config.OBV_WINDOW, 20)
+        start_idx = max(Config.RSI_PERIOD, Config.OBV_WINDOW, self.EXIT_MA, 60)
 
         # 為了計算 Rebalance 日期，我們可以使用相對索引
         # RE_DAYS 從回測開始算起
@@ -162,6 +168,7 @@ class Strategy:
             current_close = self.close.loc[t_date]
             current_rsi = self.indicators['rsi'].loc[t_date]
             current_obv_score = self.indicators['obv_score'].loc[t_date]
+            current_exit_ma = self.indicators['exit_ma'].loc[t_date]
 
             # 判斷是否為 Rebalance 日 (相對於 start_idx)
             # 題目: "每RE_DAYS日再平衡"
@@ -206,15 +213,16 @@ class Strategy:
             buy_list = []  # ticker
 
             # 1. 賣出訊號檢查 (優先權最高: 停損/訊號出場)
-            # 賣出條件 (1): RSI < 70 (T日訊號)
+            # 賣出條件 (1): 跌破 EXIT_MA (T日訊號)
             # 這適用於所有持股，無論是否 Rebalance 日
             for ticker in list(positions.keys()):
-                rsi_val = current_rsi.get(ticker)
-                if not pd.isna(rsi_val) and rsi_val < 70:
-                    sell_list.append((ticker, 'Exit: RSI < 70'))
+                price = current_close.get(ticker)
+                ma_val = current_exit_ma.get(ticker)
+                if not pd.isna(price) and not pd.isna(ma_val) and price < ma_val:
+                    sell_list.append((ticker, f'Exit: Price < MA{self.EXIT_MA}'))
 
             # 2. Rebalance 調整 (僅在 Rebalance 日執行)
-            # 並且: 排除已經因為 RSI < 70 而要賣出的
+            # 並且: 排除已經因為 賣出訊號 而要賣出的
             if is_rebalance_day:
                 current_sell_tickers = [t for t, r in sell_list]
 
@@ -223,12 +231,10 @@ class Strategy:
                     if ticker not in target_portfolio and ticker not in current_sell_tickers:
                         sell_list.append((ticker, 'Rebalance: Not in Top S_H'))
 
-                # 檢查 Target Portfolio: 如果未持有，且不在 sell_list (理論上 RSI > 70 所以不會在 sell_list) -> 買進
-                # 需注意: 如果 Target Portfolio 中某股票 RSI < 70 (不可能，因為篩選條件 RSI > 70)，則不買
+                # 檢查 Target Portfolio: 如果未持有，且不在 sell_list -> 買進
                 for ticker in target_portfolio:
-                    if ticker not in positions:
-                        # 再次確認 RSI > 70 (已由篩選保證)
-                        buy_list.append(ticker)
+                    if ticker not in positions and ticker not in current_sell_tickers:
+                         buy_list.append(ticker)
 
             # --- 執行交易 (T+1日) ---
             next_close_prices = self.close.loc[next_date]
@@ -470,7 +476,8 @@ def main():
     # 手動參數設定 (若 RUN_MODE = 'MANUAL')
     MANUAL_PARAMS = {
         'S_H': 5,
-        'RE_DAYS': 20
+        'RE_DAYS': 20,
+        'EXIT_MA': 20
     }
 
     # 1. 讀取資料
